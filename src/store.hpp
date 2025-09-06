@@ -1,52 +1,43 @@
 #pragma once
 
+#include "bloom.hpp"
 #include "resp.hpp"
+#include "sorted_set.hpp"
 
 #include <array>
-#include <cctype>
-#include <limits>
+#include <chrono>
 #include <mutex>
-#include <unordered_map>
+#include <variant>
 
 class Store {
+    using Data = std::variant<std::string, std::unique_ptr<SortedSet>, BloomFilter>;
+    struct Entry {
+        Data data;
+        long long expires = 0;
+        std::uint64_t access = 0;
+    };
     struct Shard {
         std::mutex mutex;
-        std::unordered_map<std::string, std::string> values;
+        HashTable<Entry> values;
+        std::uint64_t sequence = 0;
+        std::minstd_rand random{std::random_device{}()};
     };
+
     std::array<Shard, 64> shards_;
+    std::mutex save_mutex_;
+    std::string path_;
+    std::size_t capacity_;
+
+    static long long now();
+    static bool expired(const Entry& entry, long long time) {
+        return entry.expires && entry.expires <= time;
+    }
+    Entry& put(Shard& shard, const std::string& key, Data value, long long expires = 0);
+    void load();
 
 public:
-    std::string execute(const std::vector<std::string_view>& args) {
-        std::string name(args.front());
-        for (char& c : name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        constexpr auto arity = "-ERR wrong number of arguments\r\n";
-        if (name == "PING") {
-            if (args.size() == 1) return "+PONG\r\n";
-            return args.size() == 2 ? resp::bulk(args[1]) : arity;
-        }
-        if (name == "ECHO") return args.size() == 2 ? resp::bulk(args[1]) : arity;
-        if (name != "GET" && name != "SET" && name != "DEL" &&
-            name != "EXISTS" && name != "INCR") return "-ERR unknown command\r\n";
-        if (args.size() != (name == "SET" ? 3U : 2U)) return arity;
-
-        std::string key(args[1]);
-        auto& shard = shards_[std::hash<std::string>{}(key) % shards_.size()];
-        std::lock_guard lock(shard.mutex);
-        auto& values = shard.values;
-        const auto item = values.find(key);
-        if (name == "GET") return item == values.end() ? "$-1\r\n" : resp::bulk(item->second);
-        if (name == "SET") {
-            values.insert_or_assign(std::move(key), std::string(args[2]));
-            return "+OK\r\n";
-        }
-        if (name == "DEL") return resp::number(values.erase(key));
-        if (name == "EXISTS") return resp::number(item != values.end());
-
-        long long number = 0;
-        if (item != values.end() &&
-            (!resp::integer(item->second, number) || number == std::numeric_limits<long long>::max()))
-            return "-ERR value is not an integer or out of range\r\n";
-        values.insert_or_assign(std::move(key), std::to_string(++number));
-        return resp::number(number);
-    }
+    Store(std::string path, std::size_t capacity);
+    std::string execute(const std::vector<std::string_view>& args);
+    void sweep(std::size_t index);
+    void save();
 };

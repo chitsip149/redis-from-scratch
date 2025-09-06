@@ -1,1 +1,4 @@
 /redis-server
+
+*.snapshot
+*.snapshot.tmp.*
