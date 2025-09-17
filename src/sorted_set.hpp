@@ -12,7 +12,11 @@ class SortedSet {
     static constexpr std::size_t levels = 24;
     struct Node {
         Key key;
-        std::vector<Node*> next;
+        struct Link {
+            Node* node = nullptr;
+            std::size_t span = 0;
+        };
+        std::vector<Link> next;
         Node(Key value, std::size_t height) : key(std::move(value)), next(height) {}
     };
 
@@ -20,21 +24,37 @@ class SortedSet {
     HashTable<double> scores_;
     std::minstd_rand random_{std::random_device{}()};
 
-    std::array<Node*, levels> predecessors(const Key& key) {
-        std::array<Node*, levels> path{};
+    struct Path {
+        std::array<Node*, levels> nodes{};
+        std::array<std::size_t, levels> ranks{};
+    };
+
+    Path predecessors(const Key& key) {
+        Path path;
         Node* node = &head_;
+        std::size_t rank = 0;
         for (std::size_t level = levels; level-- > 0;) {
-            while (node->next[level] && node->next[level]->key < key)
-                node = node->next[level];
-            path[level] = node;
+            while (node->next[level].node && node->next[level].node->key < key) {
+                rank += node->next[level].span;
+                node = node->next[level].node;
+            }
+            path.nodes[level] = node;
+            path.ranks[level] = rank;
         }
         return path;
     }
 
     void unlink(const Key& key) {
         const auto path = predecessors(key);
-        auto* node = path[0]->next[0];
-        for (std::size_t i = 0; i < node->next.size(); ++i) path[i]->next[i] = node->next[i];
+        auto* node = path.nodes[0]->next[0].node;
+        for (std::size_t i = 0; i < levels; ++i) {
+            auto& link = path.nodes[i]->next[i];
+            --link.span;
+            if (link.node == node) {
+                link.span += node->next[i].span;
+                link.node = node->next[i].node;
+            }
+        }
         delete node;
     }
 
@@ -43,9 +63,9 @@ public:
     SortedSet(const SortedSet&) = delete;
     SortedSet& operator=(const SortedSet&) = delete;
     ~SortedSet() {
-        auto* node = head_.next[0];
+        auto* node = head_.next[0].node;
         while (node) {
-            auto* next = node->next[0];
+            auto* next = node->next[0].node;
             delete node;
             node = next;
         }
@@ -68,9 +88,15 @@ public:
             scores_.insert(member, score);
         }
         const auto path = predecessors(node->key);
-        for (std::size_t i = 0; i < height; ++i) {
-            node->next[i] = path[i]->next[i];
-            path[i]->next[i] = node.get();
+        for (std::size_t i = 0; i < levels; ++i) {
+            auto& link = path.nodes[i]->next[i];
+            if (i < height) {
+                const auto skipped = path.ranks[0] - path.ranks[i];
+                node->next[i] = {link.node, link.span - skipped};
+                link = {node.get(), skipped + 1};
+            } else {
+                ++link.span;
+            }
         }
         node.release();
         return added;
@@ -85,8 +111,17 @@ public:
 
     template<class Visitor>
     void range(std::size_t first, std::size_t end, Visitor visitor) const {
-        auto* node = head_.next[0];
-        for (std::size_t rank = 0; node && rank < end; ++rank, node = node->next[0])
-            if (rank >= first && !visitor(node->key.first, node->key.second)) break;
+        if (first >= end || first >= size()) return;
+        const Node* node = &head_;
+        std::size_t traversed = 0;
+        for (std::size_t level = levels; level-- > 0;) {
+            while (node->next[level].node && node->next[level].span <= first - traversed) {
+                traversed += node->next[level].span;
+                node = node->next[level].node;
+            }
+        }
+        node = node->next[0].node;
+        for (auto rank = first; node && rank < end; ++rank, node = node->next[0].node)
+            if (!visitor(node->key.first, node->key.second)) break;
     }
 };

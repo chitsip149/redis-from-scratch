@@ -6,19 +6,24 @@
 
 #include <array>
 #include <chrono>
+#include <map>
 #include <mutex>
+#include <optional>
 #include <variant>
 
 class Store {
     using Data = std::variant<std::string, std::unique_ptr<SortedSet>, BloomFilter>;
+    using Timers = std::multimap<long long, std::string>;
     struct Entry {
         Data data;
-        long long expires = 0;
+        std::optional<Timers::iterator> timer;
+        long long deadline() const { return timer ? (*timer)->first : 0; }
         std::uint64_t access = 0;
     };
     struct Shard {
         std::mutex mutex;
         HashTable<Entry> values;
+        Timers timers;
         std::uint64_t sequence = 0;
         std::minstd_rand random{std::random_device{}()};
     };
@@ -30,8 +35,10 @@ class Store {
 
     static long long now();
     static bool expired(const Entry& entry, long long time) {
-        return entry.expires && entry.expires <= time;
+        return entry.timer && entry.deadline() <= time;
     }
+    static void set_deadline(Shard& shard, const std::string& key, Entry& entry, long long deadline);
+    static bool erase(Shard& shard, const std::string& key);
     Entry& put(Shard& shard, const std::string& key, Data value, long long expires = 0);
     void load();
 

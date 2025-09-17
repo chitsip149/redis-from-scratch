@@ -31,6 +31,9 @@ persistent instance with a limit of 100 keys per shard, run
 
 ## Implementation
 
+The C++ tutorial chapters in the local reference copy informed the
+ordered expiration index and rank-aware sorted-set traversal.
+
 I/O threads run level-triggered epoll on Linux and poll on macOS. They
 parse incoming requests, hand commands to a bounded executor queue, and
 resume socket writes when the executor signals completion through a
@@ -40,9 +43,11 @@ execution and response order for pipelines.
 The keyspace uses 64 independently locked shards with custom chained hash
 tables that resize as they fill. Sorted sets pair a member hash table with
 a probabilistic skip list ordered by score and member. Score updates and
-deletions use skip-list search. Rank ranges walk the bottom level.
+deletions use skip-list search. Spans on forward links let rank ranges
+jump to the first requested member in expected logarithmic time.
 
-Expired keys are removed on access and by periodic shard sweeps. When a
+Expired keys are removed on access and through per-shard ordered deadline
+indexes. Each background sweep handles at most 128 expired keys. When a
 shard reaches its optional key limit, insertion samples up to five entries
 and evicts an expired candidate or the least recently accessed candidate.
 The limit is per shard and counts keys. Recency is rebuilt after restart.

@@ -63,15 +63,6 @@ public:
             for (auto& entry : bucket) visitor(entry.first, entry.second);
     }
 
-    template<class Predicate>
-    void erase_if(Predicate predicate) {
-        for (auto& bucket : buckets_) {
-            const auto before = bucket.size();
-            bucket.remove_if([&](const auto& entry) { return predicate(entry.second); });
-            size_ -= before - bucket.size();
-        }
-    }
-
     template<class Generator, class Visitor>
     void sample(Generator& random, Visitor visitor) {
         const auto start = random() % buckets_.size();

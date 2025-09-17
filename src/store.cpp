@@ -59,9 +59,29 @@ Store::Store(std::string path, std::size_t capacity)
     if (!path_.empty()) load();
 }
 
+void Store::set_deadline(Shard& shard, const std::string& key, Entry& entry, long long deadline) {
+    std::optional<Timers::iterator> replacement;
+    if (deadline) replacement = shard.timers.emplace(deadline, key);
+    if (entry.timer) shard.timers.erase(*entry.timer);
+    entry.timer = replacement;
+}
+
+bool Store::erase(Shard& shard, const std::string& key) {
+    auto* entry = shard.values.find(key);
+    if (!entry) return false;
+    if (entry->timer) shard.timers.erase(*entry->timer);
+    return shard.values.erase(key);
+}
+
 Store::Entry& Store::put(Shard& shard, const std::string& key, Data value, long long deadline) {
+    if (auto* existing = shard.values.find(key)) {
+        set_deadline(shard, key, *existing, deadline);
+        existing->data = std::move(value);
+        existing->access = ++shard.sequence;
+        return *existing;
+    }
     const std::string* victim = nullptr;
-    if (capacity_ && shard.values.size() >= capacity_ && !shard.values.find(key)) {
+    if (capacity_ && shard.values.size() >= capacity_) {
         const auto time = now();
         const Entry* oldest = nullptr;
         shard.values.sample(shard.random, [&](const auto& candidate, const Entry& entry) {
@@ -72,16 +92,30 @@ Store::Entry& Store::put(Shard& shard, const std::string& key, Data value, long 
             }
         });
     }
-    auto& inserted = shard.values.insert(key, {std::move(value), deadline, ++shard.sequence});
-    if (victim) shard.values.erase(*victim);
-    return inserted;
+    Entry entry{std::move(value), {}, ++shard.sequence};
+    set_deadline(shard, key, entry, deadline);
+    try {
+        auto& inserted = shard.values.insert(key, std::move(entry));
+        if (victim) erase(shard, *victim);
+        return inserted;
+    } catch (...) {
+        if (entry.timer) shard.timers.erase(*entry.timer);
+        throw;
+    }
 }
 
 void Store::sweep(std::size_t index) {
     auto& shard = shards_[index % shards_.size()];
     std::lock_guard lock(shard.mutex);
     const auto time = now();
-    shard.values.erase_if([&](const Entry& entry) { return expired(entry, time); });
+    constexpr std::size_t budget = 128;
+    for (std::size_t i = 0; i < budget && !shard.timers.empty(); ++i) {
+        const auto next = shard.timers.begin();
+        if (next->first > time) break;
+        // Erase the value before invalidating the timer's copy of the key.
+        shard.values.erase(next->second);
+        shard.timers.erase(next);
+    }
 }
 
 std::string Store::execute(const std::vector<std::string_view>& args) {
@@ -118,11 +152,11 @@ std::string Store::execute(const std::vector<std::string_view>& args) {
     const auto time = now();
     auto* entry = shard.values.find(key);
     if (entry && expired(*entry, time)) {
-        shard.values.erase(key);
+        erase(shard, key);
         entry = nullptr;
     }
     if (entry) entry->access = ++shard.sequence;
-    if (name == "DEL") return resp::number(shard.values.erase(key));
+    if (name == "DEL") return resp::number(erase(shard, key));
     if (name == "EXISTS") return resp::number(entry != nullptr);
     if (name == "SET" || name == "EXPIRE" || name == "PEXPIRE") {
         const bool set = name == "SET";
@@ -143,18 +177,18 @@ std::string Store::execute(const std::vector<std::string_view>& args) {
             return "+OK\r\n";
         }
         if (!entry) return ":0\r\n";
-        if (deadline == time) shard.values.erase(key);
-        else entry->expires = deadline;
+        if (deadline == time) erase(shard, key);
+        else set_deadline(shard, key, *entry, deadline);
         return ":1\r\n";
     }
     if (name == "TTL" || name == "PTTL") {
         if (!entry) return ":-2\r\n";
-        if (!entry->expires) return ":-1\r\n";
-        return resp::number((entry->expires - time) / (name == "TTL" ? 1000 : 1));
+        if (!entry->timer) return ":-1\r\n";
+        return resp::number((entry->deadline() - time) / (name == "TTL" ? 1000 : 1));
     }
     if (name == "PERSIST") {
-        if (!entry || !entry->expires) return ":0\r\n";
-        entry->expires = 0;
+        if (!entry || !entry->timer) return ":0\r\n";
+        set_deadline(shard, key, *entry, 0);
         return ":1\r\n";
     }
     if (name == "GET" || name == "INCR") {
@@ -189,7 +223,7 @@ std::string Store::execute(const std::vector<std::string_view>& args) {
     if (name == "ZCARD") return resp::number(set ? (*set)->size() : 0);
     if (name == "ZREM") {
         const bool removed = set && (*set)->remove(std::string(args[2]));
-        if (removed && !(*set)->size()) shard.values.erase(key);
+        if (removed && !(*set)->size()) erase(shard, key);
         return resp::number(removed);
     }
     if (name == "ZSCORE") {
@@ -253,7 +287,7 @@ void Store::save() {
                 const char type = "szb"[entry.data.index()];
                 write_all(fd, {&type, 1});
                 field(fd, key);
-                field(fd, std::to_string(entry.expires));
+                field(fd, std::to_string(entry.deadline()));
                 if (const auto* text = std::get_if<std::string>(&entry.data)) field(fd, *text);
                 else if (const auto* filter = std::get_if<BloomFilter>(&entry.data)) field(fd, filter->bits);
                 else {
