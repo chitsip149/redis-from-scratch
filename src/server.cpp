@@ -80,12 +80,14 @@ struct Client {
     bool closing = false;
     std::shared_ptr<Reply> pending;
     short watched = POLLIN;
+    std::chrono::steady_clock::time_point last_progress = std::chrono::steady_clock::now();
 
     bool receive() {
         char buffer[8192];
         const auto count = recv(socket.get(), buffer, sizeof buffer, 0);
         if (count > 0) {
             input.append(buffer, count);
+            last_progress = std::chrono::steady_clock::now();
             return true;
         }
         return count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK);
@@ -127,6 +129,7 @@ struct Client {
         if (output.empty()) return true;
         const auto count = send(socket.get(), output.data() + sent, output.size() - sent, 0);
         if (count < 0) return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+        if (count > 0) last_progress = std::chrono::steady_clock::now();
         sent += count;
         if (sent == output.size()) {
             output.clear();
@@ -200,7 +203,7 @@ public:
     }
 };
 
-void serve(int listener, Store& store, Executor& executor, bool maintenance) {
+void serve(int listener, Store& store, Executor& executor, bool maintenance, std::chrono::seconds idle_timeout) {
     Events events;
     const auto wake = Wakeup::create();
     events.watch(listener, POLLIN, true, true);
@@ -246,15 +249,22 @@ void serve(int listener, Store& store, Executor& executor, bool maintenance) {
                 advance(client);
             }
         }
-        for (auto& entry : clients) {
-            auto& client = entry.second;
+        const auto time = std::chrono::steady_clock::now();
+        for (auto it = clients.begin(); it != clients.end();) {
+            auto& client = it->second;
+            if (!client.pending && idle_timeout.count() && time - client.last_progress >= idle_timeout) {
+                events.remove(it->first);
+                it = clients.erase(it);
+                continue;
+            }
             if (client.pending && client.pending->ready.load(std::memory_order_acquire)) {
                 client.output = std::move(client.pending->data);
                 client.pending.reset();
+                client.last_progress = time;
                 advance(client);
             }
+            ++it;
         }
-        const auto time = std::chrono::steady_clock::now();
         if (maintenance && time >= sweep_at) {
             if (executor.submit([&store, shard] { store.sweep(shard); })) ++shard;
             sweep_at = time + std::chrono::milliseconds(100);
@@ -262,19 +272,20 @@ void serve(int listener, Store& store, Executor& executor, bool maintenance) {
     }
 }
 
-int argument(const char* text, int max) {
+int argument(const char* text, int max, int min = 1) {
     long long value = 0;
-    if (!resp::integer(text, value) || value < 1 || value > max)
-        throw std::invalid_argument("invalid port or worker count");
+    if (!resp::integer(text, value) || value < min || value > max)
+        throw std::invalid_argument("invalid numeric server argument");
     return static_cast<int>(value);
 }
 }
 
 int main(int argc, char** argv) try {
-    if (argc > 5)
-        throw std::invalid_argument("usage: redis-server [port] [workers] [snapshot|-] [keys-per-shard]");
+    if (argc > 6)
+        throw std::invalid_argument("usage: redis-server [port] [workers] [snapshot|-] [keys-per-shard] [idle-seconds]");
     const int port = argc > 1 ? argument(argv[1], 65535) : 6379;
     const int workers = argc > 2 ? argument(argv[2], 64) : 4;
+    const auto idle_timeout = std::chrono::seconds(argc > 5 ? argument(argv[5], 86400, 0) : 0);
     std::signal(SIGPIPE, SIG_IGN);
     std::signal(SIGINT, stop);
     std::signal(SIGTERM, stop);
@@ -292,7 +303,7 @@ int main(int argc, char** argv) try {
     check(listen(listener.get(), SOMAXCONN), "listen");
 
     Store store(argc > 3 && std::string_view(argv[3]) != "-" ? argv[3] : "",
-                argc > 4 ? argument(argv[4], 10000000) : 0);
+                argc > 4 ? argument(argv[4], 10000000, 0) : 0);
     Executor executor(workers);
     std::vector<std::thread> pool;
     std::mutex error_mutex;
@@ -301,7 +312,7 @@ int main(int argc, char** argv) try {
         for (int i = 0; i < workers; ++i) {
             pool.emplace_back([&, i] {
                 try {
-                    serve(listener.get(), store, executor, i == 0);
+                    serve(listener.get(), store, executor, i == 0, idle_timeout);
                 } catch (...) {
                     std::lock_guard lock(error_mutex);
                     if (!failure) failure = std::current_exception();

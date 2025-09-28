@@ -4,13 +4,18 @@ A C++17 in-memory key-value server that accepts RESP2 arrays of bulk strings.
 
 ```sh
 make
-./redis-server [port] [workers] [snapshot|-] [keys-per-shard]
+./redis-server [port] [workers] [snapshot|-] [keys-per-shard] [idle-seconds]
 ```
 
 The server listens on IPv4 loopback. The defaults are port 6379, four I/O
-threads, four executor threads, no snapshot, and no key limit. For a
-persistent instance with a limit of 100 keys per shard, run
-`./redis-server 6379 4 dump.snapshot 100`.
+threads, four executor threads, no snapshot, no key limit, and no idle timeout. For a
+persistent instance with a limit of 100 keys per shard and a 60-second
+idle timeout, run `./redis-server 6379 4 dump.snapshot 100 60`. Pass zero
+for either limit to disable it. The idle timer measures socket progress
+and pauses while a command is in flight.
+
+Run `make test` to check hash-table migration, RESP framing, expiration,
+sorted sets, Bloom filters, and snapshot recovery.
 
 ## Commands
 
@@ -41,7 +46,8 @@ socket pair. Each connection has at most one command in flight, preserving
 execution and response order for pipelines.
 
 The keyspace uses 64 independently locked shards with custom chained hash
-tables that resize as they fill. Sorted sets pair a member hash table with
+tables that resize as they fill. During growth, lookups and deletions
+can search both tables while ordinary operations migrate entries in batches. Sorted sets pair a member hash table with
 a probabilistic skip list ordered by score and member. Score updates and
 deletions use skip-list search. Spans on forward links let rank ranges
 jump to the first requested member in expected logarithmic time.

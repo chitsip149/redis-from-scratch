@@ -2,3 +2,4 @@
 
 *.snapshot
 *.snapshot.tmp.*
+/redis-tests
