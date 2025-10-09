@@ -15,7 +15,7 @@ for either limit to disable it. The idle timer measures socket progress
 and pauses while a command is in flight.
 
 Run `make test` to check hash-table migration, RESP framing, expiration,
-sorted sets, Bloom filters, and snapshot recovery.
+sorted sets, Bloom filters, Count-Min Sketch, and snapshot recovery.
 
 ## Commands
 
@@ -29,10 +29,24 @@ sorted sets, Bloom filters, and snapshot recovery.
 - Bloom filters: `BF.ADD key item` and `BF.EXISTS key item`. Each filter uses
   a fixed 8 KiB bitmap and seven probes. Positive matches can be false
   positives, with the probability increasing as the bitmap fills.
+- Count-Min Sketch: `CMS.INITBYDIM key width depth`, `CMS.INCRBY key item increment [item increment ...]`,
+  and `CMS.QUERY key item [item ...]`. Estimates can overcount because items
+  share counters. Dimensions are limited to 32 rows and 131,072 counters
+  total. Counters saturate at the signed 64-bit maximum.
 - Persistence: `SAVE` writes a snapshot when a path is configured. The server
   also saves after draining queued commands on SIGINT or SIGTERM, and loads
   the snapshot on startup. A crash can lose writes after the last snapshot.
   The versioned snapshot stores binary data and absolute expiration times.
+
+## Source layout
+
+- `server.cpp` starts the server and coordinates shutdown.
+- `reactor.cpp`, `events.cpp`, and `connection.cpp` handle I/O scheduling,
+  readiness notifications, and per-client request and reply buffers.
+- `commands.cpp` interprets RESP commands. `store.cpp` manages the keyspace,
+  expiration, and eviction. `snapshot.cpp` reads and writes snapshots.
+- The hash table, sorted set, Bloom filter, and Count-Min Sketch each
+  have their own header.
 
 ## Implementation
 
@@ -44,6 +58,11 @@ parse incoming requests, hand commands to a bounded executor queue, and
 resume socket writes when the executor signals completion through a
 socket pair. Each connection has at most one command in flight, preserving
 execution and response order for pipelines.
+
+On SIGINT or SIGTERM, I/O threads stop and close client sockets. The
+executor then drains submitted jobs and joins its threads before the
+optional final snapshot. Clients may disconnect before receiving replies
+for those jobs.
 
 The keyspace uses 64 independently locked shards with custom chained hash
 tables that resize as they fill. During growth, lookups and deletions

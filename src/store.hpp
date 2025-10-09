@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bloom.hpp"
+#include "count_min_sketch.hpp"
 #include "resp.hpp"
 #include "sorted_set.hpp"
 
@@ -12,7 +13,7 @@
 #include <variant>
 
 class Store {
-    using Data = std::variant<std::string, std::unique_ptr<SortedSet>, BloomFilter>;
+    using Data = std::variant<std::string, std::unique_ptr<SortedSet>, BloomFilter, CountMinSketch>;
     using Timers = std::multimap<long long, std::string>;
     struct Entry {
         Data data;

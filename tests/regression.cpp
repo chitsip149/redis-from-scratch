@@ -57,12 +57,22 @@ void store_round_trip(const std::string& path) {
         assert(store.execute({"ZADD", "set", "1", "b"}) == ":0\r\n");
         assert(store.execute({"ZRANGE", "set", "1", "1"}) == "*1\r\n$1\r\na\r\n");
         assert(store.execute({"BF.ADD", "filter", "item"}) == ":1\r\n");
+        assert(store.execute({"CMS.INITBYDIM", "bad", "131072", "2"}).substr(0, 4) == "-ERR");
+        assert(store.execute({"CMS.INITBYDIM", "counts", "128", "4"}) == "+OK\r\n");
+        assert(store.execute({"CMS.INCRBY", "counts", "a", "3", "b", "4"}) == "*2\r\n:3\r\n:4\r\n");
+        assert(store.execute({"CMS.INCRBY", "counts", "a", "99", "b", "-1"}).substr(0, 4) == "-ERR");
+        assert(store.execute({"CMS.QUERY", "counts", "a", "b"}) == "*2\r\n:3\r\n:4\r\n");
+        assert(store.execute({"CMS.INITBYDIM", "collision", "1", "4"}) == "+OK\r\n");
+        assert(store.execute({"CMS.INCRBY", "collision", "a", "9223372036854775807", "b", "1"}) ==
+               "*2\r\n:9223372036854775807\r\n:9223372036854775807\r\n");
         assert(store.execute({"SAVE"}) == "+OK\r\n");
     }
     Store restored(path, 0);
     assert(restored.execute({"GET", "value"}) == "$3\r\nnew\r\n");
     assert(restored.execute({"GET", "ttl"}) == "$-1\r\n");
     assert(restored.execute({"ZRANGE", "set", "0", "-1"}) == "*2\r\n$1\r\nb\r\n$1\r\na\r\n");
+    assert(restored.execute({"CMS.QUERY", "counts", "a", "b"}) == "*2\r\n:3\r\n:4\r\n");
+    assert(restored.execute({"CMS.QUERY", "collision", "unseen"}) == "*1\r\n:9223372036854775807\r\n");
     assert(restored.execute({"BF.EXISTS", "filter", "item"}) == ":1\r\n");
 }
 }
