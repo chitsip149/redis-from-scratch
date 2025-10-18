@@ -1,7 +1,7 @@
 #include "executor.hpp"
-#include "reactor.hpp"
-#include "socket.hpp"
-#include "store.hpp"
+#include "net/reactor.hpp"
+#include "net/socket.hpp"
+#include "storage/store.hpp"
 
 #include <arpa/inet.h>
 #include <csignal>

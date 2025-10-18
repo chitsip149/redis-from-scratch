@@ -1,7 +1,7 @@
 #include "connection.hpp"
 
-#include "executor.hpp"
-#include "store.hpp"
+#include "app/executor.hpp"
+#include "storage/store.hpp"
 
 #include <fcntl.h>
 #include <iostream>

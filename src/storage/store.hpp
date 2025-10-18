@@ -1,9 +1,9 @@
 #pragma once
 
-#include "bloom.hpp"
-#include "count_min_sketch.hpp"
-#include "resp.hpp"
-#include "sorted_set.hpp"
+#include "structures/bloom.hpp"
+#include "structures/count_min_sketch.hpp"
+#include "protocol/resp.hpp"
+#include "structures/sorted_set.hpp"
 
 #include <array>
 #include <chrono>
