@@ -43,7 +43,7 @@ void Client::dispatch(Store& store, Executor& executor, const std::shared_ptr<Wa
     const auto status = resp::parse(input, views, consumed);
     if (status == resp::Status::incomplete && input.size() <= resp::max_request) return;
     if (status != resp::Status::complete) {
-        output = "-ERR protocol error\r\n";
+        output = resp::error("ERR protocol error");
         closing = true;
         return;
     }
@@ -56,12 +56,12 @@ void Client::dispatch(Store& store, Executor& executor, const std::shared_ptr<Wa
             reply->data = store.execute(views);
         } catch (const std::exception& error) {
             std::cerr << "Command failed: " << error.what() << '\n';
-            reply->data = "-ERR command execution failed\r\n";
+            reply->data = resp::error("ERR command execution failed");
         }
         reply->ready.store(true, std::memory_order_release);
         wake->notify();
     })) {
-        output = "-BUSY command queue is full\r\n";
+        output = resp::error("BUSY command queue is full");
         closing = true;
     } else {
         pending = std::move(reply);

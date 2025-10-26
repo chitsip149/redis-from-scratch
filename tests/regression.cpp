@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <limits>
 #include <set>
 #include <thread>
 #include <unistd.h>
@@ -32,6 +33,13 @@ void hash_growth() {
 }
 
 void resp_framing() {
+    assert(resp::simple_string("OK") == "+OK\r\n");
+    assert(resp::error("ERR invalid request") == "-ERR invalid request\r\n");
+    assert(resp::number(std::numeric_limits<long long>::min()) == ":-9223372036854775808\r\n");
+    assert(resp::null_bulk() == "$-1\r\n");
+    const std::string binary("a\0b", 3);
+    assert(resp::array_header(2) + resp::bulk(binary) + resp::number(7) ==
+           "*2\r\n$3\r\n" + binary + "\r\n:7\r\n");
     constexpr char wire[] = "*2\r\n$4\r\nECHO\r\n$3\r\na\0b\r\n";
     const std::string_view request(wire, sizeof wire - 1);
     std::vector<std::string_view> args;
