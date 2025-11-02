@@ -27,11 +27,12 @@ int argument(const char* text, int max, int min = 1) {
 }
 
 int main(int argc, char** argv) try {
-    if (argc > 6)
-        throw std::invalid_argument("usage: redis-server [port] [workers] [snapshot|-] [keys-per-shard] [idle-seconds]");
+    if (argc > 7)
+        throw std::invalid_argument("usage: redis-server [port] [workers] [snapshot|-] [keys-per-shard] [idle-seconds] [clients-per-reactor]");
     const int port = argc > 1 ? argument(argv[1], 65535) : 6379;
     const int workers = argc > 2 ? argument(argv[2], 64) : 4;
     const auto idle_timeout = std::chrono::seconds(argc > 5 ? argument(argv[5], 86400, 0) : 0);
+    const int clients_per_reactor = argc > 6 ? argument(argv[6], 100000) : 256;
     std::signal(SIGPIPE, SIG_IGN);
     std::signal(SIGINT, stop);
     std::signal(SIGTERM, stop);
@@ -58,7 +59,7 @@ int main(int argc, char** argv) try {
         for (int i = 0; i < workers; ++i) {
             pool.emplace_back([&, i] {
                 try {
-                    serve(listener.get(), store, executor, i == 0, idle_timeout, stopping);
+                    serve(listener.get(), store, executor, i == 0, idle_timeout, clients_per_reactor, stopping);
                 } catch (...) {
                     std::lock_guard lock(error_mutex);
                     if (!failure) failure = std::current_exception();

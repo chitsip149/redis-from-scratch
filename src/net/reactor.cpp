@@ -9,12 +9,9 @@
 #include <sys/socket.h>
 #include <unordered_map>
 
-namespace {
-constexpr std::size_t max_clients = 256;
-}
-
 void serve(int listener, Store& store, Executor& executor, bool maintenance,
-           std::chrono::seconds idle_timeout, const std::atomic<bool>& stopping) {
+           std::chrono::seconds idle_timeout, std::size_t max_clients,
+           const std::atomic<bool>& stopping) {
     Events events;
     const auto wake = Wakeup::create();
     events.watch(listener, POLLIN, true, true);
@@ -41,7 +38,7 @@ void serve(int listener, Store& store, Executor& executor, bool maintenance,
             if (event.fd == listener) {
                 Socket client(accept(listener, nullptr, nullptr));
                 const int fd = client.get();
-                if (fd < 0 || clients.size() == max_clients) continue;
+                if (fd < 0 || clients.size() >= max_clients) continue;
                 if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) continue;
                 events.watch(fd, POLLIN, true);
                 clients.try_emplace(fd, std::move(client));
